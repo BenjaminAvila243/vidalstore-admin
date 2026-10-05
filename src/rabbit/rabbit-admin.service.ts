@@ -20,6 +20,10 @@ export type NuevaCola = {
   maxLength?: number;
 };
 
+export type ExchangeResumen = { nombre: string; tipo: string; durable: boolean };
+export type NuevoExchange = { nombre: string; tipo: string; durable: boolean };
+export type DatosBinding = { exchange: string; cola: string; routingKey: string };
+
 type ColaApi = {
   name: string;
   messages?: number;
@@ -27,6 +31,8 @@ type ColaApi = {
   durable: boolean;
   type: string;
 };
+type ExchangeApi = { name: string; type: string; durable: boolean };
+type BindingApi = { routing_key: string; properties_key: string };
 
 @Injectable()
 export class RabbitAdminService {
@@ -40,6 +46,7 @@ export class RabbitAdminService {
     const clave = config.getOrThrow<string>('RABBITMQ_PASSWORD');
     this.autorizacion = `Basic ${Buffer.from(`${usuario}:${clave}`).toString('base64')}`;
   }
+
 
   async listarColas(): Promise<ColaResumen[]> {
     const colas = (await this.llamar('GET', '/queues')) as ColaApi[];
@@ -74,6 +81,54 @@ export class RabbitAdminService {
   async eliminarCola(nombre: string): Promise<{ eliminada: string }> {
     await this.llamar('DELETE', `/queues/${this.vhost}/${encodeURIComponent(nombre)}`);
     return { eliminada: nombre };
+  }
+
+
+  async listarExchanges(): Promise<ExchangeResumen[]> {
+    const exchanges = (await this.llamar('GET', '/exchanges')) as ExchangeApi[];
+    return exchanges.map((e) => ({ nombre: e.name, tipo: e.type, durable: e.durable }));
+  }
+
+  async crearExchange(exchange: NuevoExchange): Promise<{ creado: string }> {
+    const existentes = await this.listarExchanges();
+    if (existentes.some((e) => e.nombre === exchange.nombre)) {
+      throw new ConflictException(`el exchange ${exchange.nombre} ya existe`);
+    }
+    await this.llamar('PUT', `/exchanges/${this.vhost}/${encodeURIComponent(exchange.nombre)}`, {
+      type: exchange.tipo,
+      durable: exchange.durable,
+      auto_delete: false,
+      internal: false,
+    });
+    return { creado: exchange.nombre };
+  }
+
+  async eliminarExchange(nombre: string): Promise<{ eliminado: string }> {
+    await this.llamar('DELETE', `/exchanges/${this.vhost}/${encodeURIComponent(nombre)}`);
+    return { eliminado: nombre };
+  }
+
+
+  async crearBinding(datos: DatosBinding): Promise<{ creado: DatosBinding }> {
+    await this.llamar(
+      'POST',
+      `/bindings/${this.vhost}/e/${encodeURIComponent(datos.exchange)}/q/${encodeURIComponent(datos.cola)}`,
+      { routing_key: datos.routingKey },
+    );
+    return { creado: datos };
+  }
+
+  async eliminarBinding(datos: DatosBinding): Promise<{ eliminado: DatosBinding }> {
+    const ruta = `/bindings/${this.vhost}/e/${encodeURIComponent(datos.exchange)}/q/${encodeURIComponent(datos.cola)}`;
+    const existentes = (await this.llamar('GET', ruta)) as BindingApi[];
+    const buscado = existentes.find((b) => b.routing_key === datos.routingKey);
+    if (!buscado) {
+      throw new NotFoundException(
+        `no existe un binding de ${datos.exchange} a ${datos.cola} con la routing key ${datos.routingKey}`,
+      );
+    }
+    await this.llamar('DELETE', `${ruta}/${encodeURIComponent(buscado.properties_key)}`);
+    return { eliminado: datos };
   }
 
   private async llamar(metodo: string, ruta: string, cuerpo?: unknown): Promise<unknown> {
